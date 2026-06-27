@@ -2,6 +2,9 @@
 
 *Part of **VulOS**.*
 
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
+&nbsp;Go · React · TypeScript
+
 A reusable, product-agnostic **Apps & Bots platform** that every Vulos product
 (**Talk, Mail, Meet, Office**) hosts as its "apps & bots place", and that **Vulos
 Workspace** aggregates into one unified surface. A **bot is an app**.
@@ -102,3 +105,7 @@ cd ui && npm install && npm run build      # demo app  -> dist/
 VULOS_BASE_URL=http://localhost:8080 VULOS_APP_TOKEN=vat_… \
   VULOS_APP_SIGNING_SECRET=vas_… go run ./examples/echo-app
 ```
+
+## License
+
+[MIT](LICENSE) © Vulos contributors. The `@vulos/apps-ui` package is likewise MIT (see `ui/package.json`).
