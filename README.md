@@ -19,7 +19,7 @@ app manifest serves any product through a small per-product adapter.
 
 ```
 vulos-apps/
-├── go.mod                       module "vulos-apps"
+├── go.mod                       module "github.com/vul-os/vulos-apps"
 ├── appsplatform/                the Go platform package
 │   ├── app.go                   App manifest, products, scopes, summaries
 │   ├── registry.go / store_standalone.go   Registry seam + SQLite/in-memory default
@@ -32,7 +32,7 @@ vulos-apps/
 │   └── *_test.go                tests
 ├── examples/echo-app/           dependency-free example app (any product)
 ├── ui/                          @vulos/apps-ui — the shared React component
-│   ├── src/AppsAndBots.jsx      <AppsAndBots/> (per-product + aggregate modes)
+│   ├── src/AppsAndBots.tsx      <AppsAndBots/> (per-product + aggregate modes)
 │   └── dist-lib/                library build output
 └── docs/APPS-PLATFORM.md        the full contract
 ```

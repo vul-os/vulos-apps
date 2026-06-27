@@ -1,4 +1,4 @@
-module vulos-apps
+module github.com/vul-os/vulos-apps
 
 go 1.25.0
 

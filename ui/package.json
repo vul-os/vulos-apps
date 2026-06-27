@@ -6,28 +6,41 @@
   "type": "module",
   "main": "./dist-lib/vulos-apps-ui.umd.cjs",
   "module": "./dist-lib/vulos-apps-ui.js",
+  "types": "./dist-lib/index.d.ts",
   "exports": {
     ".": {
+      "source": "./src/index.ts",
+      "types": "./dist-lib/index.d.ts",
       "import": "./dist-lib/vulos-apps-ui.js",
       "require": "./dist-lib/vulos-apps-ui.umd.cjs"
     },
-    "./styles.css": "./dist-lib/vulos-apps-ui.css"
+    "./styles.css": "./dist-lib/vulos-apps-ui.css",
+    "./package.json": "./package.json"
   },
   "files": ["dist-lib", "src"],
   "scripts": {
     "dev": "vite",
     "build": "vite build",
     "build:lib": "LIB=1 vite build",
-    "preview": "vite preview"
+    "prepare": "LIB=1 vite build",
+    "preview": "vite preview",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run"
   },
   "peerDependencies": {
     "react": "^18.0.0 || ^19.0.0",
     "react-dom": "^18.0.0 || ^19.0.0"
   },
   "devDependencies": {
+    "@types/node": "^22.10.0",
+    "@types/react": "^18.3.12",
+    "@types/react-dom": "^18.3.1",
     "@vitejs/plugin-react": "^4.3.1",
     "react": "^18.3.1",
     "react-dom": "^18.3.1",
-    "vite": "^5.4.0"
+    "typescript": "^5.6.3",
+    "vite": "^5.4.0",
+    "vite-plugin-dts": "^4.3.0",
+    "vitest": "^2.1.8"
   }
 }

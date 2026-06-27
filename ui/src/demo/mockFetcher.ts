@@ -1,27 +1,61 @@
+import type { Fetcher } from "../api";
+
 // mockFetcher simulates the Vulos Apps & Bots HTTP surface in-memory so the demo
 // (and the library build) runs with no backend. It implements the same routes
 // the real Go handler serves: GET/POST {base}, GET/PUT/DELETE {base}/{id},
 // POST {base}/{id}/rotate/token|secret. One store per product keyed by baseUrl.
-export function makeMockFetcher() {
-  const db = {}; // baseUrl -> [apps]
-  let seq = 1;
 
-  function store(baseUrl) {
+interface StoredApp {
+  id: string;
+  name: string;
+  icon: string;
+  description: string;
+  owner_id?: string;
+  scopes: string[];
+  products: string[];
+  events: string[];
+  slash_commands: { name: string; description: string }[];
+  webhook_url: string;
+  default_target?: string;
+  incoming_webhook: { id: string; enabled: boolean; url?: string };
+  created_at: string;
+  token_hash: string;
+  signing_secret: string;
+}
+
+export function makeMockFetcher(): Fetcher {
+  const db: Record<string, StoredApp[]> = {}; // baseUrl -> [apps]
+
+  function store(baseUrl: string): StoredApp[] {
     if (!db[baseUrl]) db[baseUrl] = [];
     return db[baseUrl];
   }
-  function rand(p) {
+  function rand(p: string): string {
     return p + Math.random().toString(16).slice(2, 18);
   }
-  function summary(a, base) {
-    const { token_hash, signing_secret, ...rest } = a;
-    return { ...rest, incoming_webhook: { ...a.incoming_webhook, url: `${base}/hooks/${a.incoming_webhook.id}` } };
+  function summary(a: StoredApp, base: string) {
+    const { token_hash: _t, signing_secret: _s, ...rest } = a;
+    return {
+      ...rest,
+      incoming_webhook: {
+        ...a.incoming_webhook,
+        url: `${base}/hooks/${a.incoming_webhook.id}`,
+      },
+    };
   }
 
   // Seed a few apps per product so the demo is not empty.
-  function seed(baseUrl, base, items) {
+  function seed(
+    baseUrl: string,
+    _base: string,
+    items: (Partial<StoredApp> & {
+      name: string;
+      slash?: StoredApp["slash_commands"];
+    })[],
+  ) {
     const s = store(baseUrl);
     for (const it of items) {
+      const { slash, ...rest } = it;
       s.push({
         id: rand(""),
         created_at: new Date().toISOString(),
@@ -30,9 +64,13 @@ export function makeMockFetcher() {
         incoming_webhook: { id: rand(""), enabled: true },
         webhook_url: it.webhook_url || "",
         events: [],
-        slash_commands: it.slash || [],
-        ...it,
-      });
+        slash_commands: slash || [],
+        icon: "",
+        description: "",
+        scopes: [],
+        products: [],
+        ...rest,
+      } as StoredApp);
     }
   }
   seed("/talk", "/api/apps", [
@@ -52,8 +90,8 @@ export function makeMockFetcher() {
   return async function mockFetch(url, opts = {}) {
     const u = new URL(url, "http://demo.local");
     const path = u.pathname;
-    const method = (opts.method || "GET").toUpperCase();
-    const body = opts.body ? JSON.parse(opts.body) : null;
+    const method = (opts.method || "GET").toString().toUpperCase();
+    const body = opts.body ? JSON.parse(opts.body as string) : null;
 
     // figure out baseUrl (everything before /api/apps)
     const idx = path.indexOf("/api/apps");
@@ -62,14 +100,17 @@ export function makeMockFetcher() {
     const rest = path.slice(idx + "/api/apps".length); // "", "/{id}", "/{id}/rotate/token", ...
     const s = store(baseUrl);
 
-    const json = (status, data) =>
-      new Response(JSON.stringify(data), { status, headers: { "Content-Type": "application/json" } });
+    const json = (status: number, data: unknown) =>
+      new Response(JSON.stringify(data), {
+        status,
+        headers: { "Content-Type": "application/json" },
+      });
 
     // list / create
     if (rest === "" || rest === "/") {
       if (method === "GET") return json(200, s.map((a) => summary(a, base)));
       if (method === "POST") {
-        const app = {
+        const app: StoredApp = {
           id: rand(""),
           name: body.name,
           icon: body.icon || "",
