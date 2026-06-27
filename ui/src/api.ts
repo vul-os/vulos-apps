@@ -114,13 +114,14 @@ export interface ProductMeta {
   glyph: string;
 }
 
-// The four products the platform knows about, with display metadata used by the
+// The five products the platform knows about, with display metadata used by the
 // aggregate (Workspace) grouping.
 export const PRODUCTS: ProductMeta[] = [
   { id: "talk", label: "Talk", icon: "speech_balloon", glyph: "\u{1F4AC}" },
   { id: "mail", label: "Mail", icon: "envelope", glyph: "✉️" },
   { id: "meet", label: "Meet", icon: "camera", glyph: "\u{1F4F9}" },
   { id: "office", label: "Office", icon: "memo", glyph: "\u{1F4DD}" },
+  { id: "os", label: "Vulos OS", icon: "desktop_computer", glyph: "\u{1F5A5}\u{FE0F}" },
 ];
 
 export const ALL_SCOPES: string[] = [

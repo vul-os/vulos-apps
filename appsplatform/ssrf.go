@@ -1,6 +1,7 @@
 package appsplatform
 
 import (
+	"context"
 	"fmt"
 	"net"
 	"net/url"
@@ -75,6 +76,52 @@ func ValidateWebhookURL(raw string) error {
 		}
 	}
 	return nil
+}
+
+// safeDialContext returns a DialContext that closes the DNS-rebinding TOCTOU
+// window between ValidateWebhookURL (check time) and the actual dial (use time).
+//
+// ValidateWebhookURL resolves and screens a host once, up front. A hostile DNS
+// server can answer that lookup with a public address and then, on the dial that
+// the HTTP client performs moments later, answer with a private/metadata address
+// (DNS rebinding) — the connection would then reach an internal target the guard
+// believed it had excluded. This dialer re-resolves and re-screens at dial time
+// and PINS the connection to a validated IP literal, so the socket connects to
+// exactly the address it just checked rather than to whatever a concurrent
+// re-resolution might return.
+func safeDialContext(dialer *net.Dialer) func(ctx context.Context, network, addr string) (net.Conn, error) {
+	return func(ctx context.Context, network, addr string) (net.Conn, error) {
+		host, port, err := net.SplitHostPort(addr)
+		if err != nil {
+			return nil, fmt.Errorf("appsplatform: dial: bad address %q: %w", addr, err)
+		}
+
+		var ips []net.IP
+		if ip := net.ParseIP(host); ip != nil {
+			ips = []net.IP{ip}
+		} else {
+			resolved, err := resolveIPs(host)
+			if err != nil {
+				return nil, fmt.Errorf("appsplatform: dial: host %q does not resolve: %w", host, err)
+			}
+			if len(resolved) == 0 {
+				return nil, fmt.Errorf("appsplatform: dial: host %q resolved to no addresses", host)
+			}
+			ips = resolved
+		}
+
+		allowPrivate := allowPrivateWebhooks()
+		for _, ip := range ips {
+			if !allowPrivate && isBlockedIP(ip) {
+				return nil, fmt.Errorf("appsplatform: dial: refusing blocked address %s for host %q", ip, host)
+			}
+		}
+		// Pin to the first validated address so the connection goes to exactly
+		// the IP we screened, never to a value a concurrent re-resolution by the
+		// stdlib resolver might have substituted.
+		pinned := net.JoinHostPort(ips[0].String(), port)
+		return dialer.DialContext(ctx, network, pinned)
+	}
 }
 
 // isBlockedIP reports whether ip falls in a range that must never be a webhook

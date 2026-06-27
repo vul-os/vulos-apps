@@ -1,6 +1,7 @@
 package appsplatform
 
 import (
+	"context"
 	"net"
 	"strconv"
 	"testing"
@@ -122,6 +123,58 @@ func TestUpdateRejectsPrivateWebhook(t *testing.T) {
 	if _, err := r.Update(created.App.ID, UpdateParams{WebhookURL: &bad}); err == nil {
 		t.Fatal("Update should reject a private webhook_url")
 	}
+}
+
+// TestSafeDialContext_RebindBlocked simulates a DNS rebind: ValidateWebhookURL
+// passed earlier (against a public address), but at dial time the host now
+// resolves to a blocked (loopback) address. The dial must be refused so the
+// connection never reaches the internal target.
+func TestSafeDialContext_RebindBlocked(t *testing.T) {
+	t.Setenv(AllowPrivateWebhooksEnv, "") // guard ON
+
+	orig := resolveIPs
+	defer func() { resolveIPs = orig }()
+	resolveIPs = func(string) ([]net.IP, error) {
+		return []net.IP{net.ParseIP("127.0.0.1")}, nil // rebinds to loopback
+	}
+
+	dial := safeDialContext(&net.Dialer{Timeout: time.Second})
+	conn, err := dial(context.Background(), "tcp", "rebind.example:80")
+	if err == nil {
+		conn.Close()
+		t.Fatal("expected dial to a rebinding host (private IP) to be refused")
+	}
+}
+
+// TestSafeDialContext_PinsResolvedIP proves the dialer connects to the IP it
+// screened, not to the (unresolvable) hostname: the stub resolves the name to a
+// loopback listener and, with the override permitting private targets, the dial
+// reaches that listener.
+func TestSafeDialContext_PinsResolvedIP(t *testing.T) {
+	t.Setenv(AllowPrivateWebhooksEnv, "1") // permit loopback so the dial proceeds
+
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	defer ln.Close()
+	_, port, err := net.SplitHostPort(ln.Addr().String())
+	if err != nil {
+		t.Fatalf("split: %v", err)
+	}
+
+	orig := resolveIPs
+	defer func() { resolveIPs = orig }()
+	resolveIPs = func(string) ([]net.IP, error) {
+		return []net.IP{net.ParseIP("127.0.0.1")}, nil
+	}
+
+	dial := safeDialContext(&net.Dialer{Timeout: time.Second})
+	conn, err := dial(context.Background(), "tcp", "pinned.example:"+port)
+	if err != nil {
+		t.Fatalf("expected pinned dial to the resolved loopback IP to succeed, got %v", err)
+	}
+	conn.Close()
 }
 
 func TestVerifyWithSkew(t *testing.T) {

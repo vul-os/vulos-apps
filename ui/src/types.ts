@@ -6,8 +6,8 @@
 
 // ProductId is the closed set of product identifiers the platform knows about
 // (appsplatform.ValidProducts). Strings are accepted where products may define
-// their own, but these four are always understood.
-export type ProductId = "talk" | "mail" | "meet" | "office";
+// their own, but these five are always understood.
+export type ProductId = "talk" | "mail" | "meet" | "office" | "os";
 
 // Scope is a permission string. The platform's built-in scope set is the generic
 // apps:read / apps:write plus the Talk-compatible scopes; products MAY register

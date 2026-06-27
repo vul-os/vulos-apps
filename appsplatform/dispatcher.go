@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"log"
+	"net"
 	"net/http"
 	"strings"
 	"sync"
@@ -53,8 +54,28 @@ func NewDispatcher(reg Registry, product string) *Dispatcher {
 	return &Dispatcher{
 		reg:     reg,
 		product: product,
-		client:  &http.Client{Timeout: 5 * time.Second},
+		client:  newWebhookClient(5 * time.Second),
 		subs:    make(map[string]map[int]chan []byte),
+	}
+}
+
+// newWebhookClient builds the HTTP client used for outbound webhook delivery. Its
+// transport dials through safeDialContext, which re-screens and pins the
+// destination IP at dial time so a DNS rebind cannot redirect a validated
+// webhook to an internal address (see safeDialContext).
+func newWebhookClient(timeout time.Duration) *http.Client {
+	dialer := &net.Dialer{Timeout: timeout}
+	return &http.Client{
+		Timeout: timeout,
+		Transport: &http.Transport{
+			Proxy:                 http.ProxyFromEnvironment,
+			DialContext:           safeDialContext(dialer),
+			ForceAttemptHTTP2:     true,
+			MaxIdleConns:          100,
+			IdleConnTimeout:       90 * time.Second,
+			TLSHandshakeTimeout:   10 * time.Second,
+			ExpectContinueTimeout: 1 * time.Second,
+		},
 	}
 }
 
