@@ -1,0 +1,228 @@
+/*
+ * @vulos/apps-ui — OSS-native tokens (mirrored verbatim from the Vula OS
+ * index.css contract in vulos-cloud/DESIGN_OSS_NATIVE.md). Tokens are scoped to
+ * the component root (.vulos-apps) so the library never leaks globals; a host
+ * that already defines these tokens transparently overrides them.
+ */
+.vulos-apps {
+  /* near-black canvas + surfaces */
+  --va-bg-base: #0c0c0c;
+  --va-bg-surface: #111111;
+  --va-bg-elevated: #1a1a1a;
+  --va-bg-hover: #1e1e1e;
+  --va-bg-selected: #1a1a2e;
+  --va-bg-selected-border: #1e1e3a;
+  /* borders */
+  --va-border-subtle: #111;
+  --va-border-default: #1a1a1a;
+  --va-border-strong: #222;
+  --va-border-emphasis: #333;
+  /* text ramp */
+  --va-text-primary: #e5e5e5;
+  --va-text-secondary: #ccc;
+  --va-text-tertiary: #999;
+  --va-text-muted: #888;
+  --va-text-faint: #666;
+  --va-text-ghost: #555;
+  /* accent (user-themeable) + brand reservoir */
+  --va-accent: #3b82f6;
+  --va-accent-hover: color-mix(in srgb, var(--va-accent) 80%, black);
+  --va-brand: #c96aff;
+  --va-danger: #f87171;
+  --va-ok: #4ade80;
+  /* type + scale */
+  --va-font-mono: ui-monospace, "SF Mono", "Cascadia Code", "Fira Code", monospace;
+  --va-radius: 8px;
+  --va-s1: 4px;
+  --va-s2: 8px;
+  --va-s3: 12px;
+  --va-s4: 16px;
+  --va-s5: 24px;
+  --va-s6: 32px;
+
+  font-family: var(--va-font-mono);
+  color: var(--va-text-primary);
+  background: var(--va-bg-base);
+  padding: var(--va-s5);
+  box-sizing: border-box;
+  line-height: 1.5;
+}
+.vulos-apps[data-theme="light"] {
+  --va-bg-base: #f5f5f5;
+  --va-bg-surface: #ffffff;
+  --va-bg-elevated: #ffffff;
+  --va-bg-hover: #f0f0f0;
+  --va-border-strong: #ddd;
+  --va-border-emphasis: #ccc;
+  --va-text-primary: #1a1a1a;
+  --va-text-secondary: #333;
+  --va-text-tertiary: #666;
+  --va-text-muted: #777;
+  --va-text-faint: #999;
+}
+.vulos-apps *,
+.vulos-apps *::before,
+.vulos-apps *::after {
+  box-sizing: border-box;
+}
+
+/* header ------------------------------------------------------------------- */
+.va-head {
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: var(--va-s4);
+  flex-wrap: wrap;
+  margin-bottom: var(--va-s5);
+}
+.va-title {
+  margin: 0;
+  font-size: 1.25rem;
+  font-weight: 600;
+  letter-spacing: -0.02em;
+}
+.va-sub {
+  margin: var(--va-s1) 0 0;
+  color: var(--va-text-tertiary);
+  font-size: 0.8rem;
+}
+
+/* buttons ------------------------------------------------------------------ */
+.va-btn {
+  font: inherit;
+  font-size: 0.8rem;
+  padding: var(--va-s2) var(--va-s3);
+  border-radius: var(--va-radius);
+  border: 1px solid var(--va-border-emphasis);
+  background: var(--va-bg-elevated);
+  color: var(--va-text-primary);
+  cursor: pointer;
+  transition: border-color 120ms ease, background 120ms ease, transform 80ms ease;
+}
+.va-btn:hover { border-color: var(--va-text-faint); background: var(--va-bg-hover); }
+.va-btn:active { transform: translateY(1px); }
+.va-btn:focus-visible { outline: 2px solid var(--va-accent); outline-offset: 2px; }
+.va-btn--primary { background: var(--va-accent); border-color: var(--va-accent); color: #fff; }
+.va-btn--primary:hover { background: var(--va-accent-hover); border-color: var(--va-accent-hover); }
+.va-btn--danger { color: var(--va-danger); border-color: var(--va-border-emphasis); }
+.va-btn--danger:hover { border-color: var(--va-danger); }
+.va-btn[disabled] { opacity: 0.5; cursor: not-allowed; }
+
+/* groups + grid ------------------------------------------------------------ */
+.va-group { margin-bottom: var(--va-s6); }
+.va-group__head {
+  display: flex;
+  align-items: center;
+  gap: var(--va-s2);
+  margin-bottom: var(--va-s3);
+  padding-bottom: var(--va-s2);
+  border-bottom: 1px solid var(--va-border-default);
+}
+.va-group__title { font-size: 0.95rem; font-weight: 600; margin: 0; }
+.va-group__count {
+  font-size: 0.7rem;
+  color: var(--va-text-faint);
+  border: 1px solid var(--va-border-strong);
+  border-radius: 999px;
+  padding: 1px var(--va-s2);
+}
+.va-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
+  gap: var(--va-s3);
+}
+
+/* app card ----------------------------------------------------------------- */
+.va-card {
+  background: var(--va-bg-surface);
+  border: 1px solid var(--va-border-strong);
+  border-radius: var(--va-radius);
+  padding: var(--va-s4);
+  display: flex;
+  flex-direction: column;
+  gap: var(--va-s3);
+  transition: border-color 120ms ease, transform 120ms ease;
+}
+.va-card:hover { border-color: var(--va-border-emphasis); transform: translateY(-1px); }
+.va-card__top { display: flex; gap: var(--va-s3); align-items: flex-start; }
+.va-card__icon {
+  width: 36px; height: 36px; flex: none;
+  display: grid; place-items: center;
+  border-radius: var(--va-radius);
+  background: var(--va-bg-elevated);
+  border: 1px solid var(--va-border-strong);
+  font-size: 1.1rem;
+}
+.va-card__name { margin: 0; font-size: 0.92rem; font-weight: 600; }
+.va-card__desc { margin: var(--va-s1) 0 0; font-size: 0.78rem; color: var(--va-text-tertiary); }
+.va-tags { display: flex; flex-wrap: wrap; gap: var(--va-s1); }
+.va-tag {
+  font-size: 0.68rem;
+  padding: 1px var(--va-s2);
+  border-radius: 999px;
+  border: 1px solid var(--va-border-strong);
+  color: var(--va-text-muted);
+}
+.va-tag--product { color: var(--va-text-secondary); border-color: var(--va-border-emphasis); }
+.va-card__row { display: flex; gap: var(--va-s2); flex-wrap: wrap; margin-top: auto; }
+
+/* states ------------------------------------------------------------------- */
+.va-state {
+  text-align: center;
+  padding: var(--va-s6) var(--va-s4);
+  color: var(--va-text-tertiary);
+  border: 1px dashed var(--va-border-strong);
+  border-radius: var(--va-radius);
+  font-size: 0.85rem;
+}
+.va-state--error { color: var(--va-danger); border-color: var(--va-danger); }
+
+/* modal / form ------------------------------------------------------------- */
+.va-overlay {
+  position: fixed; inset: 0;
+  background: rgba(0, 0, 0, 0.6);
+  display: grid; place-items: center;
+  padding: var(--va-s4);
+  z-index: 1000;
+}
+.va-modal {
+  background: var(--va-bg-elevated);
+  border: 1px solid var(--va-border-emphasis);
+  border-radius: var(--va-radius);
+  width: min(520px, 100%);
+  max-height: 90vh;
+  overflow: auto;
+  padding: var(--va-s5);
+}
+.va-modal__title { margin: 0 0 var(--va-s4); font-size: 1rem; }
+.va-field { display: flex; flex-direction: column; gap: var(--va-s1); margin-bottom: var(--va-s3); }
+.va-field > label { font-size: 0.75rem; color: var(--va-text-tertiary); }
+.va-input, .va-textarea {
+  font: inherit; font-size: 0.82rem;
+  background: var(--va-bg-base);
+  border: 1px solid var(--va-border-strong);
+  border-radius: var(--va-radius);
+  color: var(--va-text-primary);
+  padding: var(--va-s2) var(--va-s3);
+}
+.va-input:focus, .va-textarea:focus { outline: 2px solid var(--va-accent); outline-offset: 1px; }
+.va-checks { display: flex; flex-wrap: wrap; gap: var(--va-s2); }
+.va-check { display: flex; align-items: center; gap: var(--va-s1); font-size: 0.76rem; color: var(--va-text-secondary); }
+.va-modal__actions { display: flex; justify-content: flex-end; gap: var(--va-s2); margin-top: var(--va-s4); }
+.va-secret {
+  font-size: 0.74rem;
+  background: var(--va-bg-base);
+  border: 1px solid var(--va-border-strong);
+  border-radius: var(--va-radius);
+  padding: var(--va-s2) var(--va-s3);
+  word-break: break-all;
+  color: var(--va-text-secondary);
+  margin-bottom: var(--va-s2);
+}
+.va-secret b { color: var(--va-brand); font-weight: 600; }
+.va-note { font-size: 0.74rem; color: var(--va-text-faint); }
+
+@media (max-width: 480px) {
+  .vulos-apps { padding: var(--va-s4); }
+  .va-grid { grid-template-columns: 1fr; }
+}
