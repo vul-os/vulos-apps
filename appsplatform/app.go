@@ -30,6 +30,7 @@ const (
 	ProductMail   = "mail"
 	ProductMeet   = "meet"
 	ProductOffice = "office"
+	ProductOS     = "os"
 )
 
 // ValidProducts is the closed set of product identifiers the platform knows.
@@ -38,6 +39,7 @@ var ValidProducts = map[string]bool{
 	ProductMail:   true,
 	ProductMeet:   true,
 	ProductOffice: true,
+	ProductOS:     true,
 }
 
 // Generic, product-agnostic scopes. Products MAY define their own additional
