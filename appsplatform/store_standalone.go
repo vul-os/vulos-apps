@@ -195,6 +195,10 @@ func (r *StandaloneRegistry) Create(p CreateParams) (*Created, error) {
 	if err != nil {
 		return nil, err
 	}
+	webhookURL := strings.TrimSpace(p.WebhookURL)
+	if err := ValidateWebhookURL(webhookURL); err != nil {
+		return nil, err
+	}
 	token := GenerateToken()
 	secret := GenerateSecret()
 	a := &App{
@@ -208,7 +212,7 @@ func (r *StandaloneRegistry) Create(p CreateParams) (*Created, error) {
 		Products:      products,
 		Events:        NormalizeEvents(p.Events),
 		SlashCommands: NormalizeSlashCommands(p.SlashCommands),
-		WebhookURL:    strings.TrimSpace(p.WebhookURL),
+		WebhookURL:    webhookURL,
 		Incoming: IncomingWebhook{
 			ID:      GenerateWebhookID(),
 			Enabled: p.IncomingEnabled,
@@ -261,19 +265,29 @@ func (r *StandaloneRegistry) GetByTokenHash(tokenHash string) (*App, error) {
 	return clone(match), nil
 }
 
-// GetByIncomingWebhookID implements Registry.
+// GetByIncomingWebhookID implements Registry. Like GetByTokenHash, the id
+// comparison is constant-time and does not short-circuit, so a valid-but-wrong
+// webhook id cannot be distinguished by timing.
 func (r *StandaloneRegistry) GetByIncomingWebhookID(webhookID string) (*App, error) {
 	if webhookID == "" {
 		return nil, ErrNotFound
 	}
+	want := []byte(webhookID)
 	r.mu.RLock()
 	defer r.mu.RUnlock()
+	var match *App
 	for _, a := range r.all {
-		if a.Incoming.ID == webhookID {
-			return clone(a), nil
+		if a.Incoming.ID == "" {
+			continue
+		}
+		if subtle.ConstantTimeCompare([]byte(a.Incoming.ID), want) == 1 {
+			match = a
 		}
 	}
-	return nil, ErrNotFound
+	if match == nil {
+		return nil, ErrNotFound
+	}
+	return clone(match), nil
 }
 
 // List implements Registry.
@@ -329,7 +343,11 @@ func (r *StandaloneRegistry) Update(id string, p UpdateParams) (*App, error) {
 		updated.SlashCommands = NormalizeSlashCommands(*p.SlashCommands)
 	}
 	if p.WebhookURL != nil {
-		updated.WebhookURL = strings.TrimSpace(*p.WebhookURL)
+		webhookURL := strings.TrimSpace(*p.WebhookURL)
+		if err := ValidateWebhookURL(webhookURL); err != nil {
+			return nil, err
+		}
+		updated.WebhookURL = webhookURL
 	}
 	if p.DefaultTarget != nil {
 		updated.DefaultTarget = strings.TrimSpace(*p.DefaultTarget)

@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"strconv"
+	"strings"
 	"time"
 )
 
@@ -52,6 +53,30 @@ func Sign(timestamp string, body []byte, secret string) string {
 func Verify(timestamp string, body []byte, secret, sig string) bool {
 	expected := Sign(timestamp, body, secret)
 	return hmac.Equal([]byte(expected), []byte(sig))
+}
+
+// VerifyWithSkew is Verify plus a freshness check, giving receivers replay
+// defense out of the box: it returns true only when sig is a valid signature for
+// (timestamp, body) under secret AND timestamp is within maxAge of now (in
+// either direction, to tolerate clock skew). The HMAC comparison is constant
+// time. A non-numeric timestamp fails. A maxAge <= 0 disables the freshness
+// check (equivalent to Verify). Callers typically pass 5 * time.Minute.
+func VerifyWithSkew(timestamp string, body []byte, secret, sig string, maxAge time.Duration) bool {
+	if !Verify(timestamp, body, secret, sig) {
+		return false
+	}
+	if maxAge <= 0 {
+		return true
+	}
+	ts, err := strconv.ParseInt(strings.TrimSpace(timestamp), 10, 64)
+	if err != nil {
+		return false
+	}
+	delta := time.Now().Unix() - ts
+	if delta < 0 {
+		delta = -delta
+	}
+	return time.Duration(delta)*time.Second <= maxAge
 }
 
 // NowTimestamp returns the current unix-seconds timestamp as a string, suitable

@@ -160,6 +160,10 @@ func (d *Dispatcher) deliver(a *App, ev Event) {
 // post signs and POSTs a single event body to url. Best-effort: failures are
 // logged, never retried, and never surfaced to the originating request.
 func (d *Dispatcher) post(url, secret string, body []byte) {
+	if err := ValidateWebhookURL(url); err != nil {
+		log.Printf("[apps] refusing event delivery: %v", err)
+		return
+	}
 	ts := NowTimestamp()
 	req, err := http.NewRequest(http.MethodPost, url, bytes.NewReader(body))
 	if err != nil {
