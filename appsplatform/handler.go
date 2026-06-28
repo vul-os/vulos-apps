@@ -449,20 +449,19 @@ func (h *handler) incoming(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusNotFound, map[string]any{"error": "unknown webhook"})
 		return
 	}
-	// The body is the product-specific action payload; target falls back to the
-	// app's default target. The adapter decides how to interpret it.
+	// Security: the target is pinned to the app's configured DefaultTarget.
+	// Any "target" field supplied in the request body is intentionally ignored:
+	// honoring it would let a caller holding only the webhook id drive Act against
+	// an arbitrary target, bypassing CanAccessTarget / RequiredScope enforcement.
 	body, _ := io.ReadAll(io.LimitReader(r.Body, 1<<20))
-	var probe struct {
-		Target string `json:"target"`
-	}
-	_ = json.Unmarshal(body, &probe)
-	target := strings.TrimSpace(probe.Target)
-	if target == "" {
-		target = a.DefaultTarget
+	// Run the same scope + target authorization as the authenticated runtime path,
+	// bounded to the owning app's granted scopes.
+	if !h.checkScopeAndTarget(w, a, "incoming_webhook", a.DefaultTarget) {
+		return
 	}
 	result, err := h.cfg.Adapter.Act(r.Context(), a, ActionRequest{
 		Action:  "incoming_webhook",
-		Target:  target,
+		Target:  a.DefaultTarget,
 		Payload: json.RawMessage(body),
 	}, h.cfg.Dispatcher.EmitFunc())
 	if err != nil {
