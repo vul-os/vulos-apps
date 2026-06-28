@@ -3,6 +3,7 @@ package appsplatform
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"strings"
@@ -25,6 +26,11 @@ type MountConfig struct {
 	// Admin authenticates the management API caller using the product's OWN
 	// session (required for the management routes; if nil they respond 401).
 	Admin AdminAuthFunc
+
+	// Limiter is the rate limiter applied to all runtime token-auth routes
+	// (per-token and per-IP). If nil, NewDefaultRateLimiter() is used. Assign
+	// NoopRateLimiter{} to disable rate limiting for this mount.
+	Limiter RateLimiter
 
 	// BasePath is the mount prefix (default "/api/apps"). The returned handler
 	// uses absolute patterns under it; mount it at BasePath and BasePath+"/".
@@ -75,6 +81,13 @@ func NewHandler(cfg MountConfig) (*Handler, error) {
 	}
 	base = "/" + strings.Trim(base, "/")
 
+	// Resolve the rate limiter: default-on with sane limits unless the caller
+	// explicitly provided one (including NoopRateLimiter{} to disable).
+	limiter := cfg.Limiter
+	if limiter == nil {
+		limiter = NewDefaultRateLimiter()
+	}
+
 	h := &handler{cfg: cfg, base: base, product: cfg.Adapter.Product()}
 	mux := http.NewServeMux()
 
@@ -94,7 +107,10 @@ func NewHandler(cfg MountConfig) (*Handler, error) {
 	// Runtime routes (Bearer app token). Registered individually (not as a
 	// subtree) so literal "/v1/" segments stay more specific than the "{id}"
 	// management routes and the ServeMux does not see an ambiguous overlap.
-	tok := func(fn http.HandlerFunc) http.Handler { return TokenAuth(cfg.Registry, fn) }
+	// Each route is wrapped: per-IP rate limit → per-token rate limit → token auth.
+	tok := func(fn http.HandlerFunc) http.Handler {
+		return PerIPRateLimit(limiter, PerTokenRateLimit(limiter, TokenAuth(cfg.Registry, fn)))
+	}
 	mux.Handle("GET "+base+"/v1/auth.test", tok(h.authTest))
 	mux.Handle("POST "+base+"/v1/act", tok(h.act))
 	mux.Handle("GET "+base+"/v1/read", tok(h.read))
@@ -185,6 +201,21 @@ func (h *handler) create(w http.ResponseWriter, r *http.Request, owner string, i
 	// enable the incoming webhook unless explicitly disabled.
 	if len(req.Products) == 0 {
 		req.Products = []string{h.product}
+	}
+	// Cross-product restriction: a non-admin caller may only register apps that
+	// target THIS product. We only enforce this for products the platform knows
+	// about — unknown products are still rejected with 400 by the registry's
+	// NormalizeProducts validation below.
+	if !isAdmin {
+		for _, p := range req.Products {
+			normalized := strings.ToLower(strings.TrimSpace(p))
+			if ValidProducts[normalized] && normalized != h.product {
+				writeJSON(w, http.StatusForbidden, map[string]any{
+					"error": fmt.Sprintf("registering an app targeting %q from the %q mount requires admin privileges", p, h.product),
+				})
+				return
+			}
+		}
 	}
 	incoming := true
 	if req.IncomingEnabled != nil {

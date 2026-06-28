@@ -1,6 +1,9 @@
 package appsplatform
 
-import "errors"
+import (
+	"errors"
+	"time"
+)
 
 // ErrNotFound is returned by Registry lookups/mutations when no app matches.
 var ErrNotFound = errors.New("appsplatform: app not found")
@@ -19,7 +22,8 @@ type CreateParams struct {
 	SlashCommands   []SlashCommand
 	WebhookURL      string
 	DefaultTarget   string
-	IncomingEnabled bool // mint an enabled incoming webhook (default true)
+	IncomingEnabled bool          // mint an enabled incoming webhook (default true)
+	TokenTTL        time.Duration // if > 0, the initial token expires after this duration
 }
 
 // UpdateParams carries the mutable fields for an update. Nil pointers mean
@@ -36,6 +40,7 @@ type UpdateParams struct {
 	WebhookURL      *string
 	DefaultTarget   *string
 	IncomingEnabled *bool
+	TokenTTL        *time.Duration // if non-nil, updates the app-level TTL policy (0 = disable)
 }
 
 // Created bundles a freshly-installed app with its one-time plaintext secrets.

@@ -80,9 +80,9 @@ type IncomingWebhook struct {
 // Secrets (never serialized via Summary):
 //   - TokenHash is the sha256 hex of the app token (Bearer secret). The
 //     plaintext is shown ONCE at create/rotate time and never stored.
-//   - SigningSecret is stored AS-IS (not hashed): the platform must reproduce it
-//     to sign every outbound event, so it cannot be a one-way hash. Treat the
-//     app row as sensitive at rest accordingly.
+//   - SigningSecret is stored envelope-encrypted at rest when a
+//     SigningSecretEncryptor is configured (see WithSigningSecretEncryptor); in
+//     memory it is always the plaintext the signing layer consumes.
 type App struct {
 	ID            string          `json:"id"`
 	Name          string          `json:"name"`
@@ -99,9 +99,14 @@ type App struct {
 	DefaultTarget string          `json:"default_target"` // generic fallback target (channel/folder/room/doc)
 	CreatedAt     time.Time       `json:"created_at"`
 
+	// Token timing — exposed in Summary for operator visibility.
+	TokenIssuedAt  time.Time `json:"token_issued_at"`  // when the current token was issued
+	TokenExpiresAt time.Time `json:"token_expires_at"` // zero = never expires
+
 	// Secrets — never serialized in API responses (see Summary).
-	TokenHash     string `json:"-"`
-	SigningSecret string `json:"-"`
+	TokenHash     string        `json:"-"`
+	SigningSecret string        `json:"-"`
+	TokenTTL      time.Duration `json:"-"` // app-level TTL policy; 0 = no TTL
 }
 
 // AccountID is the synthetic author/membership id an app posts and is addressed
@@ -174,6 +179,9 @@ type Summary struct {
 	OwnerID       string          `json:"owner_id"`
 	DefaultTarget string          `json:"default_target,omitempty"`
 	CreatedAt     time.Time       `json:"created_at"`
+	// Token timing (informational; helps operators detect approaching expiry).
+	TokenIssuedAt  time.Time `json:"token_issued_at,omitempty"`
+	TokenExpiresAt time.Time `json:"token_expires_at,omitempty"`
 }
 
 // IncomingWebhookPath is the relative URL (path) clients POST to for an incoming
@@ -190,19 +198,21 @@ func (a *App) ToSummary(basePath string) Summary {
 		inc.URL = IncomingWebhookPath(basePath, inc.ID)
 	}
 	return Summary{
-		ID:            a.ID,
-		Name:          a.Name,
-		Icon:          a.Icon,
-		Description:   a.Description,
-		Scopes:        nonNilStr(a.Scopes),
-		Products:      nonNilStr(a.Products),
-		Events:        nonNilStr(a.Events),
-		SlashCommands: nonNilCmds(a.SlashCommands),
-		WebhookURL:    a.WebhookURL,
-		Incoming:      inc,
-		OwnerID:       a.OwnerID,
-		DefaultTarget: a.DefaultTarget,
-		CreatedAt:     a.CreatedAt,
+		ID:             a.ID,
+		Name:           a.Name,
+		Icon:           a.Icon,
+		Description:    a.Description,
+		Scopes:         nonNilStr(a.Scopes),
+		Products:       nonNilStr(a.Products),
+		Events:         nonNilStr(a.Events),
+		SlashCommands:  nonNilCmds(a.SlashCommands),
+		WebhookURL:     a.WebhookURL,
+		Incoming:       inc,
+		OwnerID:        a.OwnerID,
+		DefaultTarget:  a.DefaultTarget,
+		CreatedAt:      a.CreatedAt,
+		TokenIssuedAt:  a.TokenIssuedAt,
+		TokenExpiresAt: a.TokenExpiresAt,
 	}
 }
 

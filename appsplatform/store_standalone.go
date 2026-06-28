@@ -21,10 +21,11 @@ import (
 // With a nil db (NewMemoryRegistry) it is purely in-memory — used by tests and
 // as a fallback when the durable DB cannot be opened.
 type StandaloneRegistry struct {
-	mu       sync.RWMutex
-	db       *sql.DB // nil = in-memory only
-	all      map[string]*App
-	scopeSet ScopeSet
+	mu        sync.RWMutex
+	db        *sql.DB // nil = in-memory only
+	all       map[string]*App
+	scopeSet  ScopeSet
+	encryptor SigningSecretEncryptor // nil = store signing secret as plaintext
 }
 
 var _ Registry = (*StandaloneRegistry)(nil)
@@ -36,6 +37,14 @@ type Option func(*StandaloneRegistry)
 // DefaultScopeSet is used.
 func WithScopeSet(s ScopeSet) Option {
 	return func(r *StandaloneRegistry) { r.scopeSet = s }
+}
+
+// WithSigningSecretEncryptor configures envelope encryption for the vas_ signing
+// secret at rest. The encryptor is applied on every write and reversed on every
+// read, so the in-memory App always carries the plaintext. Legacy plaintext rows
+// (no enc: prefix) are decrypted transparently and re-encrypted on next write.
+func WithSigningSecretEncryptor(e SigningSecretEncryptor) Option {
+	return func(r *StandaloneRegistry) { r.encryptor = e }
 }
 
 // NewMemoryRegistry builds an in-memory-only registry (no persistence).
@@ -107,13 +116,23 @@ func (r *StandaloneRegistry) init() error {
 	if err != nil {
 		return fmt.Errorf("appsplatform: init schema: %w", err)
 	}
+	// Schema migration: add columns introduced after v0.1.0. SQLite does not
+	// support ADD COLUMN IF NOT EXISTS, so we ignore duplicate-column errors.
+	for _, stmt := range []string{
+		`ALTER TABLE apps ADD COLUMN token_issued_at INTEGER NOT NULL DEFAULT 0`,
+		`ALTER TABLE apps ADD COLUMN token_expires_at INTEGER NOT NULL DEFAULT 0`,
+		`ALTER TABLE apps ADD COLUMN token_ttl_ns INTEGER NOT NULL DEFAULT 0`,
+	} {
+		r.db.Exec(stmt) // nolint:errcheck — duplicate column = benign error
+	}
 	return nil
 }
 
 func (r *StandaloneRegistry) load() error {
 	rows, err := r.db.Query(`SELECT id, name, icon, description, owner_id, org_id, scopes_json,
 		products_json, events_json, slash_json, webhook_url, incoming_webhook_id,
-		incoming_webhook_enabled, default_target, token_hash, signing_secret, created_at FROM apps`)
+		incoming_webhook_enabled, default_target, token_hash, signing_secret, created_at,
+		token_issued_at, token_expires_at, token_ttl_ns FROM apps`)
 	if err != nil {
 		return fmt.Errorf("appsplatform: load: %w", err)
 	}
@@ -122,10 +141,11 @@ func (r *StandaloneRegistry) load() error {
 		a := &App{}
 		var scopesJSON, productsJSON, eventsJSON, slashJSON string
 		var incEnabled int
-		var created int64
+		var created, tokenIssuedNs, tokenExpiresNs, tokenTTLNs int64
 		if err := rows.Scan(&a.ID, &a.Name, &a.Icon, &a.Description, &a.OwnerID, &a.OrgID, &scopesJSON,
 			&productsJSON, &eventsJSON, &slashJSON, &a.WebhookURL, &a.Incoming.ID,
-			&incEnabled, &a.DefaultTarget, &a.TokenHash, &a.SigningSecret, &created); err != nil {
+			&incEnabled, &a.DefaultTarget, &a.TokenHash, &a.SigningSecret, &created,
+			&tokenIssuedNs, &tokenExpiresNs, &tokenTTLNs); err != nil {
 			return fmt.Errorf("appsplatform: scan: %w", err)
 		}
 		_ = json.Unmarshal([]byte(scopesJSON), &a.Scopes)
@@ -134,6 +154,21 @@ func (r *StandaloneRegistry) load() error {
 		_ = json.Unmarshal([]byte(slashJSON), &a.SlashCommands)
 		a.Incoming.Enabled = incEnabled != 0
 		a.CreatedAt = time.Unix(0, created)
+		if tokenIssuedNs != 0 {
+			a.TokenIssuedAt = time.Unix(0, tokenIssuedNs)
+		}
+		if tokenExpiresNs != 0 {
+			a.TokenExpiresAt = time.Unix(0, tokenExpiresNs)
+		}
+		a.TokenTTL = time.Duration(tokenTTLNs)
+		// Decrypt signing secret if encryptor is configured.
+		if r.encryptor != nil {
+			plain, err := r.encryptor.Decrypt(a.SigningSecret)
+			if err != nil {
+				return fmt.Errorf("appsplatform: decrypt signing secret for app %s: %w", a.ID, err)
+			}
+			a.SigningSecret = plain
+		}
 		r.all[a.ID] = a
 	}
 	return rows.Err()
@@ -152,11 +187,29 @@ func (r *StandaloneRegistry) persist(a *App) error {
 	if a.Incoming.Enabled {
 		inc = 1
 	}
+	// Envelope-encrypt the signing secret before writing to durable storage.
+	signingSecret := a.SigningSecret
+	if r.encryptor != nil && a.SigningSecret != "" {
+		enc, err := r.encryptor.Encrypt(a.SigningSecret)
+		if err != nil {
+			return fmt.Errorf("appsplatform: encrypt signing secret: %w", err)
+		}
+		signingSecret = enc
+	}
+	tokenIssuedNs := a.TokenIssuedAt.UnixNano()
+	if a.TokenIssuedAt.IsZero() {
+		tokenIssuedNs = 0
+	}
+	tokenExpiresNs := a.TokenExpiresAt.UnixNano()
+	if a.TokenExpiresAt.IsZero() {
+		tokenExpiresNs = 0
+	}
 	_, err := r.db.Exec(
 		`INSERT INTO apps (id, name, icon, description, owner_id, org_id, scopes_json,
 			products_json, events_json, slash_json, webhook_url, incoming_webhook_id,
-			incoming_webhook_enabled, default_target, token_hash, signing_secret, created_at)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+			incoming_webhook_enabled, default_target, token_hash, signing_secret, created_at,
+			token_issued_at, token_expires_at, token_ttl_ns)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		 ON CONFLICT(id) DO UPDATE SET name=excluded.name, icon=excluded.icon,
 			description=excluded.description, owner_id=excluded.owner_id, org_id=excluded.org_id,
 			scopes_json=excluded.scopes_json, products_json=excluded.products_json,
@@ -164,10 +217,12 @@ func (r *StandaloneRegistry) persist(a *App) error {
 			webhook_url=excluded.webhook_url, incoming_webhook_id=excluded.incoming_webhook_id,
 			incoming_webhook_enabled=excluded.incoming_webhook_enabled,
 			default_target=excluded.default_target, token_hash=excluded.token_hash,
-			signing_secret=excluded.signing_secret`,
+			signing_secret=excluded.signing_secret, token_issued_at=excluded.token_issued_at,
+			token_expires_at=excluded.token_expires_at, token_ttl_ns=excluded.token_ttl_ns`,
 		a.ID, a.Name, a.Icon, a.Description, a.OwnerID, a.OrgID, string(scopesJSON),
 		string(productsJSON), string(eventsJSON), string(slashJSON), a.WebhookURL, a.Incoming.ID,
-		inc, a.DefaultTarget, a.TokenHash, a.SigningSecret, a.CreatedAt.UnixNano())
+		inc, a.DefaultTarget, a.TokenHash, signingSecret, a.CreatedAt.UnixNano(),
+		tokenIssuedNs, tokenExpiresNs, int64(a.TokenTTL))
 	return err
 }
 
@@ -201,6 +256,7 @@ func (r *StandaloneRegistry) Create(p CreateParams) (*Created, error) {
 	}
 	token := GenerateToken()
 	secret := GenerateSecret()
+	now := time.Now()
 	a := &App{
 		ID:            GenerateAppID(),
 		Name:          strings.TrimSpace(p.Name),
@@ -218,9 +274,14 @@ func (r *StandaloneRegistry) Create(p CreateParams) (*Created, error) {
 			Enabled: p.IncomingEnabled,
 		},
 		DefaultTarget: strings.TrimSpace(p.DefaultTarget),
-		CreatedAt:     time.Now(),
+		CreatedAt:     now,
 		TokenHash:     HashToken(token),
 		SigningSecret: secret,
+		TokenIssuedAt: now,
+		TokenTTL:      p.TokenTTL,
+	}
+	if p.TokenTTL > 0 {
+		a.TokenExpiresAt = now.Add(p.TokenTTL)
 	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -355,6 +416,13 @@ func (r *StandaloneRegistry) Update(id string, p UpdateParams) (*App, error) {
 	if p.IncomingEnabled != nil {
 		updated.Incoming.Enabled = *p.IncomingEnabled
 	}
+	if p.TokenTTL != nil {
+		updated.TokenTTL = *p.TokenTTL
+		// Retroactive age-revocation: if a TTL is set, existing tokens older
+		// than TTL are already expired by the middleware's age check. The
+		// absolute TokenExpiresAt is NOT changed here — it reflects when the
+		// current token was issued (unchanged until the next rotation).
+	}
 	if err := r.persist(updated); err != nil {
 		return nil, err
 	}
@@ -378,7 +446,8 @@ func (r *StandaloneRegistry) Delete(id string) error {
 	return nil
 }
 
-// RotateToken implements Registry.
+// RotateToken implements Registry. It mints a new token, resets TokenIssuedAt,
+// and re-applies the app's TokenTTL policy (if set) to compute a new TokenExpiresAt.
 func (r *StandaloneRegistry) RotateToken(id string) (string, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -387,8 +456,15 @@ func (r *StandaloneRegistry) RotateToken(id string) (string, error) {
 		return "", ErrNotFound
 	}
 	token := GenerateToken()
+	now := time.Now()
 	updated := clone(a)
 	updated.TokenHash = HashToken(token)
+	updated.TokenIssuedAt = now
+	if updated.TokenTTL > 0 {
+		updated.TokenExpiresAt = now.Add(updated.TokenTTL)
+	} else {
+		updated.TokenExpiresAt = time.Time{} // clear any previous absolute expiry
+	}
 	if err := r.persist(updated); err != nil {
 		return "", err
 	}

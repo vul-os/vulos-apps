@@ -3,8 +3,11 @@ package appsplatform
 import (
 	"context"
 	"errors"
+	"net"
 	"net/http"
 	"strings"
+	"sync"
+	"time"
 )
 
 // ctxKey is the unexported context key type for values the platform stores.
@@ -23,7 +26,8 @@ type AdminAuthFunc func(r *http.Request) (ownerID string, isAdmin bool, ok bool)
 // "Authorization: Bearer <app-token>" header, looks the app up by the token's
 // sha256 HASH in the registry (constant-time; the plaintext is never stored),
 // and on success stashes the app in the request context. On any miss it responds
-// 401; a registry error responds 503.
+// 401; a registry error responds 503. Expired tokens (absolute TokenExpiresAt or
+// age-based TokenTTL) are rejected with 401.
 func TokenAuth(reg Registry, next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		token := bearerToken(r)
@@ -38,6 +42,17 @@ func TokenAuth(reg Registry, next http.Handler) http.Handler {
 				return
 			}
 			writeJSON(w, http.StatusUnauthorized, map[string]any{"error": "invalid app token"})
+			return
+		}
+		// Absolute expiry: set explicitly at token generation / rotation time.
+		if !app.TokenExpiresAt.IsZero() && time.Now().After(app.TokenExpiresAt) {
+			writeJSON(w, http.StatusUnauthorized, map[string]any{"error": "token expired"})
+			return
+		}
+		// Age-based revocation: retroactive policy — any token older than
+		// TokenTTL is rejected even if it was minted before the policy was set.
+		if app.TokenTTL > 0 && !app.TokenIssuedAt.IsZero() && time.Since(app.TokenIssuedAt) > app.TokenTTL {
+			writeJSON(w, http.StatusUnauthorized, map[string]any{"error": "token expired"})
 			return
 		}
 		ctx := context.WithValue(r.Context(), ctxApp, app)
@@ -58,4 +73,164 @@ func bearerToken(r *http.Request) string {
 		return strings.TrimSpace(strings.TrimPrefix(auth, "Bearer "))
 	}
 	return ""
+}
+
+// clientIP extracts the client IP from RemoteAddr, stripping the port.
+func clientIP(r *http.Request) string {
+	host, _, err := net.SplitHostPort(r.RemoteAddr)
+	if err != nil {
+		return r.RemoteAddr
+	}
+	return host
+}
+
+// ---- Rate limiting ----------------------------------------------------------
+
+// RateLimiter limits request rates for the platform's runtime routes. Both
+// methods must be safe for concurrent use.
+type RateLimiter interface {
+	// AllowToken returns true if the bearer token (identified by its sha256 hash)
+	// has not exceeded its per-token rate limit.
+	AllowToken(tokenHash string) bool
+	// AllowIP returns true if the remote IP has not exceeded its per-IP limit.
+	AllowIP(ip string) bool
+}
+
+// NoopRateLimiter allows every request. Assign it to MountConfig.Limiter to
+// disable built-in rate limiting entirely.
+type NoopRateLimiter struct{}
+
+func (NoopRateLimiter) AllowToken(string) bool { return true }
+func (NoopRateLimiter) AllowIP(string) bool    { return true }
+
+// tbucket is a single token-bucket used by TokenBucketLimiter.
+type tbucket struct {
+	mu         sync.Mutex
+	tokens     float64
+	lastRefill time.Time
+	rate       float64 // tokens per second added
+	capacity   float64 // maximum burst capacity
+}
+
+func newTBucket(rate, capacity float64) *tbucket {
+	return &tbucket{tokens: capacity, lastRefill: time.Now(), rate: rate, capacity: capacity}
+}
+
+// allow consumes one token from the bucket. Returns true if the request is
+// permitted (a token was available), false if the bucket was empty.
+func (b *tbucket) allow() bool {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	now := time.Now()
+	elapsed := now.Sub(b.lastRefill).Seconds()
+	b.tokens += elapsed * b.rate
+	if b.tokens > b.capacity {
+		b.tokens = b.capacity
+	}
+	b.lastRefill = now
+	if b.tokens >= 1 {
+		b.tokens--
+		return true
+	}
+	return false
+}
+
+// TokenBucketLimiter is the built-in per-token and per-IP token-bucket limiter.
+// Buckets are created on first use and evicted when the map exceeds maxBuckets
+// (to bound memory in the face of many unique callers).
+type TokenBucketLimiter struct {
+	tokenRate, tokenBurst float64
+	ipRate, ipBurst       float64
+
+	mu           sync.Mutex
+	tokenBuckets map[string]*tbucket
+	ipBuckets    map[string]*tbucket
+}
+
+// maxBuckets caps the number of tracked keys before eviction.
+const maxBuckets = 50_000
+
+// NewDefaultRateLimiter returns a TokenBucketLimiter with sane defaults:
+//   - Per-token: 20 requests/second, burst of 50
+//   - Per-IP:    10 requests/second, burst of 30
+func NewDefaultRateLimiter() *TokenBucketLimiter {
+	return NewTokenBucketLimiter(20, 50, 10, 30)
+}
+
+// NewTokenBucketLimiter constructs a TokenBucketLimiter with explicit rates.
+//   - tokenRate/tokenBurst: per-token requests/s and burst
+//   - ipRate/ipBurst:       per-IP requests/s and burst
+func NewTokenBucketLimiter(tokenRate, tokenBurst, ipRate, ipBurst float64) *TokenBucketLimiter {
+	return &TokenBucketLimiter{
+		tokenRate:    tokenRate,
+		tokenBurst:   tokenBurst,
+		ipRate:       ipRate,
+		ipBurst:      ipBurst,
+		tokenBuckets: make(map[string]*tbucket),
+		ipBuckets:    make(map[string]*tbucket),
+	}
+}
+
+func (l *TokenBucketLimiter) bucket(m map[string]*tbucket, key string, rate, capacity float64) *tbucket {
+	b, ok := m[key]
+	if !ok {
+		// Evict a batch of entries when the map is too large.
+		if len(m) >= maxBuckets {
+			n := maxBuckets / 10
+			for k := range m {
+				delete(m, k)
+				n--
+				if n <= 0 {
+					break
+				}
+			}
+		}
+		b = newTBucket(rate, capacity)
+		m[key] = b
+	}
+	return b
+}
+
+// AllowToken implements RateLimiter.
+func (l *TokenBucketLimiter) AllowToken(tokenHash string) bool {
+	l.mu.Lock()
+	b := l.bucket(l.tokenBuckets, tokenHash, l.tokenRate, l.tokenBurst)
+	l.mu.Unlock()
+	return b.allow()
+}
+
+// AllowIP implements RateLimiter.
+func (l *TokenBucketLimiter) AllowIP(ip string) bool {
+	l.mu.Lock()
+	b := l.bucket(l.ipBuckets, ip, l.ipRate, l.ipBurst)
+	l.mu.Unlock()
+	return b.allow()
+}
+
+// PerIPRateLimit is a middleware that checks the per-IP rate limit before
+// passing through to next. It writes 429 on exhaustion.
+func PerIPRateLimit(limiter RateLimiter, next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !limiter.AllowIP(clientIP(r)) {
+			writeJSON(w, http.StatusTooManyRequests, map[string]any{"error": "rate limit exceeded"})
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
+}
+
+// PerTokenRateLimit is a middleware that checks the per-token rate limit using
+// the bearer token's sha256 hash (so the plaintext is never stored in the rate
+// limiter). Requests without a bearer token skip the per-token check (they will
+// be rejected by TokenAuth downstream). It writes 429 on exhaustion.
+func PerTokenRateLimit(limiter RateLimiter, next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if token := bearerToken(r); token != "" {
+			if !limiter.AllowToken(HashToken(token)) {
+				writeJSON(w, http.StatusTooManyRequests, map[string]any{"error": "rate limit exceeded"})
+				return
+			}
+		}
+		next.ServeHTTP(w, r)
+	})
 }
