@@ -157,14 +157,15 @@ func TestResolveSlashCommandProductScoped(t *testing.T) {
 
 func TestSQLitePersistsAcrossReopen(t *testing.T) {
 	dsn := filepath.Join(t.TempDir(), "apps.db")
-	r1, err := NewStandaloneRegistry(dsn)
+	enc := testEncryptor(t)
+	r1, err := NewStandaloneRegistry(dsn, WithSigningSecretEncryptor(enc))
 	if err != nil {
 		t.Fatal(err)
 	}
 	c := newApp(t, r1, "a", []string{ProductOffice}, []string{ScopeAppsRead})
 	r1.Close()
 
-	r2, err := NewStandaloneRegistry(dsn)
+	r2, err := NewStandaloneRegistry(dsn, WithSigningSecretEncryptor(enc))
 	if err != nil {
 		t.Fatal(err)
 	}

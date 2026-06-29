@@ -7,6 +7,7 @@ import (
 	"io"
 	"net/http"
 	"strings"
+	"time"
 )
 
 // MountConfig configures the mountable HTTP handler set a product embeds.
@@ -189,6 +190,7 @@ func (h *handler) create(w http.ResponseWriter, r *http.Request, owner string, i
 		WebhookURL      string         `json:"webhook_url"`
 		DefaultTarget   string         `json:"default_target"`
 		IncomingEnabled *bool          `json:"incoming_enabled"`
+		TokenTTL        int64          `json:"token_ttl"` // seconds; 0 = no TTL
 	}
 	if !decode(w, r, &req) {
 		return
@@ -233,6 +235,7 @@ func (h *handler) create(w http.ResponseWriter, r *http.Request, owner string, i
 		WebhookURL:      req.WebhookURL,
 		DefaultTarget:   req.DefaultTarget,
 		IncomingEnabled: incoming,
+		TokenTTL:        time.Duration(req.TokenTTL) * time.Second,
 	})
 	if err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]any{"error": err.Error()})
@@ -270,9 +273,15 @@ func (h *handler) update(w http.ResponseWriter, r *http.Request, owner string, i
 		WebhookURL      *string         `json:"webhook_url"`
 		DefaultTarget   *string         `json:"default_target"`
 		IncomingEnabled *bool           `json:"incoming_enabled"`
+		TokenTTL        *int64          `json:"token_ttl"` // seconds; null = leave unchanged, 0 = disable
 	}
 	if !decode(w, r, &req) {
 		return
+	}
+	var ttl *time.Duration
+	if req.TokenTTL != nil {
+		d := time.Duration(*req.TokenTTL) * time.Second
+		ttl = &d
 	}
 	updated, err := h.cfg.Registry.Update(a.ID, UpdateParams{
 		Name:            req.Name,
@@ -285,6 +294,7 @@ func (h *handler) update(w http.ResponseWriter, r *http.Request, owner string, i
 		WebhookURL:      req.WebhookURL,
 		DefaultTarget:   req.DefaultTarget,
 		IncomingEnabled: req.IncomingEnabled,
+		TokenTTL:        ttl,
 	})
 	if err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]any{"error": err.Error()})

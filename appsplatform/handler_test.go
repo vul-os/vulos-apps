@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 )
 
 // fakeAdapter is a minimal Talk-like product adapter for tests.
@@ -261,6 +262,61 @@ func TestRotateTokenEndpoint(t *testing.T) {
 	if w := do(h, "GET", "/api/apps/v1/auth.test", "", map[string]string{"Authorization": "Bearer " + c.Token}); w.Code != http.StatusUnauthorized {
 		t.Fatalf("old token should be invalid, got %d", w.Code)
 	}
+}
+
+// TestHTTPCreateTokenTTL verifies the full HTTP path for token_ttl: a token
+// created with a short TTL via the management API must be rejected by the
+// runtime token-auth middleware once the TTL has elapsed.
+func TestHTTPCreateTokenTTL(t *testing.T) {
+	h, _, _ := newTestHandler(t, ProductTalk)
+	alice := map[string]string{"X-User": "alice", "Content-Type": "application/json"}
+
+	// Create an app with a 1-second TTL via the HTTP management API.
+	w := do(h, "POST", "/api/apps", `{"name":"ttl-app","token_ttl":1}`, alice)
+	if w.Code != http.StatusCreated {
+		t.Fatalf("create code %d: %s", w.Code, w.Body)
+	}
+	var created struct {
+		Token string `json:"token"`
+	}
+	json.Unmarshal(w.Body.Bytes(), &created)
+	if created.Token == "" {
+		t.Fatal("no token in create response")
+	}
+
+	// Token should be accepted immediately.
+	if w := do(h, "GET", "/api/apps/v1/auth.test", "", map[string]string{"Authorization": "Bearer " + created.Token}); w.Code != http.StatusOK {
+		t.Fatalf("token should be valid immediately after create, got %d: %s", w.Code, w.Body)
+	}
+
+	// Wait for the 1-second TTL to elapse (give it 200 ms of headroom).
+	time.Sleep(1200 * time.Millisecond)
+
+	// Token must now be rejected with 401 "token expired".
+	w = do(h, "GET", "/api/apps/v1/auth.test", "", map[string]string{"Authorization": "Bearer " + created.Token})
+	if w.Code != http.StatusUnauthorized {
+		t.Fatalf("expired token should be 401, got %d: %s", w.Code, w.Body)
+	}
+	if !strings.Contains(w.Body.String(), "expired") {
+		t.Fatalf("response should mention expiry, got: %s", w.Body)
+	}
+}
+
+// testEncryptor returns a deterministic AESGCMEncryptor suitable for tests that
+// exercise the SQLite persistence path. Any test that calls NewStandaloneRegistry
+// (which now refuses to store signing secrets in cleartext) must pass this
+// encryptor via WithSigningSecretEncryptor.
+func testEncryptor(t *testing.T) *AESGCMEncryptor {
+	t.Helper()
+	kek := make([]byte, 32)
+	for i := range kek {
+		kek[i] = byte(i + 1)
+	}
+	enc, err := NewAESGCMEncryptor(kek)
+	if err != nil {
+		t.Fatalf("testEncryptor: %v", err)
+	}
+	return enc
 }
 
 func contains(s []string, v string) bool {

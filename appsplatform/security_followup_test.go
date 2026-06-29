@@ -1,6 +1,7 @@
 package appsplatform
 
 import (
+	"database/sql"
 	"net/http"
 	"path/filepath"
 	"strings"
@@ -140,7 +141,8 @@ func TestRotateTokenResetsTTL(t *testing.T) {
 // TestSQLitePersistsTTLFields confirms token timing fields survive a DB close/reopen.
 func TestSQLitePersistsTTLFields(t *testing.T) {
 	dsn := filepath.Join(t.TempDir(), "ttl.db")
-	r1, err := NewStandaloneRegistry(dsn)
+	enc := testEncryptor(t)
+	r1, err := NewStandaloneRegistry(dsn, WithSigningSecretEncryptor(enc))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -155,7 +157,7 @@ func TestSQLitePersistsTTLFields(t *testing.T) {
 	}
 	r1.Close()
 
-	r2, err := NewStandaloneRegistry(dsn)
+	r2, err := NewStandaloneRegistry(dsn, WithSigningSecretEncryptor(enc))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -436,32 +438,54 @@ func TestAESGCMEncryptorBadKey(t *testing.T) {
 }
 
 // TestLegacyPlaintextSecretReadableWithEncryptor verifies backward compatibility:
-// an existing plaintext vas_ secret (written without an encryptor) is returned
-// as-is when decrypted (no enc: prefix → passthrough).
+// rows written by an older binary (before KEK enforcement) carry a plaintext
+// signing_secret with no enc: prefix. When reopened with an AESGCMEncryptor,
+// those rows are still readable via the passthrough path in Decrypt.
 func TestLegacyPlaintextSecretReadableWithEncryptor(t *testing.T) {
-	// Write without encryptor.
 	dsn := filepath.Join(t.TempDir(), "legacy.db")
-	r1, err := NewStandaloneRegistry(dsn)
-	if err != nil {
-		t.Fatal(err)
-	}
-	c, _ := r1.Create(CreateParams{Name: "legacy", OwnerID: "a", Products: []string{ProductTalk}})
-	plain := c.SigningSecret
-	r1.Close()
 
-	// Reopen WITH encryptor — legacy plaintext row should be readable.
+	// Build the encryptor we will use for reopening.
 	kek := make([]byte, 32)
 	for i := range kek {
 		kek[i] = byte(i + 3)
 	}
 	enc, _ := NewAESGCMEncryptor(kek)
+
+	// Bootstrap the schema via a throw-away registry (encryptor required now), then
+	// close immediately. We will inject a legacy plaintext row via raw SQL below.
+	bootstrap, err := NewStandaloneRegistry(dsn, WithSigningSecretEncryptor(enc))
+	if err != nil {
+		t.Fatal(err)
+	}
+	bootstrap.Close()
+
+	// Directly insert a row with a plaintext signing_secret to simulate a DB
+	// created by a pre-KEK-enforcement binary. The sqlite driver is already
+	// registered by the production code in this package.
+	plain := GenerateSecret() // e.g. "vas_abc..."
+	legacyID := GenerateAppID()
+	db, err := sql.Open("sqlite", dsn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = db.Exec(
+		`INSERT INTO apps (id, signing_secret, created_at) VALUES (?, ?, ?)`,
+		legacyID, plain, time.Now().UnixNano(),
+	)
+	db.Close()
+	if err != nil {
+		t.Fatalf("seed legacy row: %v", err)
+	}
+
+	// Reopen WITH encryptor — the plaintext row (no enc: prefix) must pass
+	// through AESGCMEncryptor.Decrypt unchanged.
 	r2, err := NewStandaloneRegistry(dsn, WithSigningSecretEncryptor(enc))
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer r2.Close()
 
-	app, err := r2.Get(c.App.ID)
+	app, err := r2.Get(legacyID)
 	if err != nil {
 		t.Fatal(err)
 	}

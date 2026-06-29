@@ -3,8 +3,10 @@ package appsplatform
 import (
 	"crypto/subtle"
 	"database/sql"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"os"
 	"sort"
 	"strings"
 	"sync"
@@ -12,6 +14,13 @@ import (
 
 	_ "modernc.org/sqlite"
 )
+
+// AppsKEKEnv is the environment variable from which NewStandaloneRegistry
+// auto-seeds the AES-256-GCM signing-secret encryptor. Its value must be a
+// 64-character lowercase hex string (32 bytes). If the variable is absent the
+// caller must provide WithSigningSecretEncryptor; persisting a non-empty
+// signing secret without any encryptor configured is refused (see persist).
+const AppsKEKEnv = "VULOS_APPS_KEK"
 
 // StandaloneRegistry is the in-repo default Registry. It keeps fast in-memory
 // indexes as the source of truth for lookups and WRITES THROUGH to a pure-Go
@@ -59,6 +68,13 @@ func NewMemoryRegistry(opts ...Option) *StandaloneRegistry {
 // NewStandaloneRegistry opens (or creates) the SQLite database at dsn, ensures
 // the schema, and loads existing apps into memory. Use a file path for
 // durability or ":memory:" for an ephemeral DB.
+//
+// Signing-secret encryption is automatically enabled when the VULOS_APPS_KEK
+// environment variable is set to a 64-hex-char AES-256 key. Callers may also
+// pass WithSigningSecretEncryptor to supply a KEK programmatically (takes
+// precedence over the env var). Persisting an app whose signing secret is
+// non-empty without any encryptor configured is refused; set VULOS_APPS_KEK or
+// call WithSigningSecretEncryptor to satisfy this requirement.
 func NewStandaloneRegistry(dsn string, opts ...Option) (*StandaloneRegistry, error) {
 	db, err := sql.Open("sqlite", dsn)
 	if err != nil {
@@ -66,6 +82,21 @@ func NewStandaloneRegistry(dsn string, opts ...Option) (*StandaloneRegistry, err
 	}
 	db.SetMaxOpenConns(1)
 	r := &StandaloneRegistry{db: db, all: make(map[string]*App), scopeSet: DefaultScopeSet()}
+	// Auto-configure signing-secret encryption from VULOS_APPS_KEK if set.
+	// Opts are applied afterwards so WithSigningSecretEncryptor overrides this.
+	if kekHex := strings.TrimSpace(os.Getenv(AppsKEKEnv)); kekHex != "" {
+		kek, err := hex.DecodeString(kekHex)
+		if err != nil {
+			db.Close()
+			return nil, fmt.Errorf("appsplatform: %s is not valid hex: %w", AppsKEKEnv, err)
+		}
+		enc, err := NewAESGCMEncryptor(kek)
+		if err != nil {
+			db.Close()
+			return nil, fmt.Errorf("appsplatform: %s: %w", AppsKEKEnv, err)
+		}
+		r.encryptor = enc
+	}
 	for _, o := range opts {
 		o(r)
 	}
@@ -188,6 +219,10 @@ func (r *StandaloneRegistry) persist(a *App) error {
 		inc = 1
 	}
 	// Envelope-encrypt the signing secret before writing to durable storage.
+	// Persisting a non-empty signing secret without an encryptor is refused:
+	// writing it in cleartext would silently create a plaintext secret in the
+	// database. Set VULOS_APPS_KEK (or call WithSigningSecretEncryptor) to
+	// satisfy this requirement.
 	signingSecret := a.SigningSecret
 	if r.encryptor != nil && a.SigningSecret != "" {
 		enc, err := r.encryptor.Encrypt(a.SigningSecret)
@@ -195,6 +230,10 @@ func (r *StandaloneRegistry) persist(a *App) error {
 			return fmt.Errorf("appsplatform: encrypt signing secret: %w", err)
 		}
 		signingSecret = enc
+	} else if r.encryptor == nil && a.SigningSecret != "" {
+		return fmt.Errorf("appsplatform: refusing to persist signing secret in cleartext: "+
+			"set the %s environment variable to a 64-hex-char AES-256 key, "+
+			"or pass WithSigningSecretEncryptor", AppsKEKEnv)
 	}
 	tokenIssuedNs := a.TokenIssuedAt.UnixNano()
 	if a.TokenIssuedAt.IsZero() {

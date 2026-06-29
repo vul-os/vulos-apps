@@ -63,12 +63,18 @@ func NewDispatcher(reg Registry, product string) *Dispatcher {
 // transport dials through safeDialContext, which re-screens and pins the
 // destination IP at dial time so a DNS rebind cannot redirect a validated
 // webhook to an internal address (see safeDialContext).
+//
+// Proxy is explicitly nil: http.ProxyFromEnvironment would route outbound
+// webhook requests through any *_PROXY env var, bypassing the SSRF IP guard
+// (safeDialContext is not invoked for the proxy hop). Operators who need proxy
+// support must configure it at the network layer (e.g. transparent proxy),
+// never via the process-level env vars.
 func newWebhookClient(timeout time.Duration) *http.Client {
 	dialer := &net.Dialer{Timeout: timeout}
 	return &http.Client{
 		Timeout: timeout,
 		Transport: &http.Transport{
-			Proxy:                 http.ProxyFromEnvironment,
+			Proxy:                 nil, // see doc comment — env proxy bypasses SSRF guard
 			DialContext:           safeDialContext(dialer),
 			ForceAttemptHTTP2:     true,
 			MaxIdleConns:          100,
