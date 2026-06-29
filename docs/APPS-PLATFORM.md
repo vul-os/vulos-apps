@@ -205,12 +205,47 @@ product, emits a `slash_command` event, and tells the caller not to store it.
 
 The `Registry` is an **interface**. The **standalone default**
 (`StandaloneRegistry`) lives in the core package, backed by pure-Go SQLite with
-an in-memory fallback (tokens stored as sha256 hashes; signing secrets as-is). A
-**Vulos Cloud developer console / control plane** implements the **same
-interface** in a **separate package the core never imports**; only a product's
-composition root wires it, and only when explicitly selected. Removing the cloud
-package never breaks the core build. The data plane (HTTP surface, dispatcher,
-signing, webhooks, SSE) depends only on the interface. See `appsplatform/seam.go`.
+an in-memory fallback (tokens stored as sha256 hashes; signing secrets encrypted
+at rest). A **Vulos Cloud developer console / control plane** implements the
+**same interface** in a **separate package the core never imports**; only a
+product's composition root wires it, and only when explicitly selected. Removing
+the cloud package never breaks the core build. The data plane (HTTP surface,
+dispatcher, signing, webhooks, SSE) depends only on the interface. See
+`appsplatform/seam.go`.
+
+### Storage backends (SQLite vs. Postgres)
+
+The core package ships **two in-repo `Registry` implementations**, selected by
+environment for cloud consolidation:
+
+| Backend | When | Where |
+|---|---|---|
+| **SQLite** (`StandaloneRegistry`, `store_standalone.go`) | `DATABASE_URL` / `VULOS_DATABASE_URL` **unset** | Pure-Go modernc SQLite + in-memory index. Open-core / self-host default; the OS embeds apps with its own store via `NewStandaloneRegistry`. |
+| **Postgres** (`PostgresRegistry`, `store_postgres.go`) | `DATABASE_URL` (or `VULOS_DATABASE_URL`) **set** | pgx stdlib driver, dedicated schema **`apps`** so one Neon database is shared across products without table collisions. No in-memory cache — every instance reads one source of truth. |
+
+`appsplatform.OpenRegistry(sqliteDSN, opts...)` performs the selection:
+
+```go
+reg, _ := appsplatform.OpenRegistry(cfg.AppsDB,
+    appsplatform.WithScopeSet(talkScopes)) // Postgres when DATABASE_URL is set, else SQLite
+```
+
+Both backends enforce the **same security posture**: `vat_` app tokens are stored
+as a **sha256 hash only** (never the plaintext); `vas_` signing secrets are
+**envelope-encrypted at rest** with AES-256-GCM, and persisting a non-empty
+signing secret with **no encryptor configured is refused (fail-loud)**; token
+TTL / issued-at / expires-at timing fields are persisted. The Postgres schema +
+tables are created idempotently on open (`CREATE SCHEMA IF NOT EXISTS apps`).
+
+### Environment
+
+| Variable | Effect |
+|---|---|
+| `DATABASE_URL` | Postgres connection string. When set, selects the Postgres backend (schema `apps`). Takes precedence over `VULOS_DATABASE_URL`. |
+| `VULOS_DATABASE_URL` | Namespaced fallback for `DATABASE_URL`. |
+| `VULOS_APPS_KEK` | 64-hex-char (32-byte) AES-256 key that auto-enables signing-secret encryption at rest. **Required** on either backend when a non-empty signing secret is persisted (unless an encryptor is supplied via `WithSigningSecretEncryptor`). |
+| `VULOS_APPS_ALLOW_PRIVATE_WEBHOOKS` | Truthy (`1`/`true`/`yes`) disables the SSRF guard for self-hosted internal webhook targets. |
+| `VULOS_TEST_POSTGRES` | **Tests only.** A Postgres DSN (or `1`/`true`/`yes` to read `DATABASE_URL`) that gates the Postgres-backend test subtests. Unset → only the SQLite path runs. |
 
 ---
 
